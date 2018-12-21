@@ -355,10 +355,13 @@ class opensearchDescription:
 #  opensearch methods
 # ----------------------------------------------------------------
 # get list of ResponseWrapper from a given open search request
-def mundiopenURL2(col, query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
+def mundiopenURL2(col="", query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
             
-    os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
-        
+    if col != "":
+        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
+    else:
+        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?" + query
+    
     response_wrappers = []
     
     # getting first page (i.e. 'page0')
@@ -395,9 +398,12 @@ def mundiopenURL2(col, query="", data=None, method='Get', cookies=None, username
 
 
 # get number of results from a given open search request
-def mundinbopenURL2(col, query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
+def mundinbopenURL2(col="", query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
             
-    os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
+    if col != "":
+        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
+    else:
+        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?" + query
     
     # getting first page (i.e. 'page0')
     page0 = openURL(os_query, data, method, cookies, username, password, timeout, headers, verify, cert)

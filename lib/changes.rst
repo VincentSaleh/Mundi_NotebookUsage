@@ -1,6 +1,10 @@
 mundilib Changes
 ================
 
+0.0.5 (2018-12-20)
+------------------
+- Able opensearch request on all catalogue, not only on collection.
+
 0.0.4 (2018-12-06)
 ------------------
 - Catch exception on unavailable service for given collection.
