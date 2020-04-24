@@ -1,454 +1,631 @@
 #!/usr/bin/python
 # -*- coding: ISO-8859-15 -*-
 # =============================================================================
-# Copyright (c) 2018 Mundi Web Services
+# Copyright (c) 2019 Mundi Web Services
+# Licensed under the 3-Clause BSD License; you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at:
+# https://opensource.org/licenses/BSD-3-Clause
 #
 # Author : Patricia Segonds
 #
 # Contact email: patricia.segonds@atos.net
 # =============================================================================
 
-from owslib.wms  import WebMapService
+# standard library imports
+import logging
+from typing import Dict, List
+
+# other imports
+from lxml import etree
+from owslib.csw import CatalogueServiceWeb, CswRecord
+from owslib.util import openURL, OrderedDict, ResponseWrapper
+from owslib.wcs import WebCoverageService
+from owslib.wfs import WebFeatureService
+from owslib.wms import WebMapService
 from owslib.wmts import WebMapTileService
-from owslib.wfs  import WebFeatureService
-from owslib.wcs  import WebCoverageService
-from owslib.csw  import CatalogueServiceWeb
-from owslib.csw  import CswRecord
 
-from owslib.util import openURL
-from owslib.util import ResponseWrapper 
-
-from owslib.util import OrderedDict
-
-from math import ceil # upper round
-
-import lxml.etree
-
-    
-### Mundi definitions
-
-# ----------------
-#    End points
-# ----------------
-# collection ids
-# TODO : addition of other ids (from Landsat, Sentinel3, ...)
-mundi_id = {'Sentinel1': "88b68ca0-1f84-4286-8359-d3f480771de5", \
-            'Sentinel2': "d275ef59-3f26-4466-9a60-ff837e572144"}
-
-# web services
-mundi_services = {'wms': "http://shservices.mundiwebservices.com/ogc/wms/", \
-                  'wmts': "http://shservices.mundiwebservices.com/ogc/wmts/", \
-                  'wfs': "http://shservices.mundiwebservices.com/ogc/wfs/", \
-                  'wcs': "http://shservices.mundiwebservices.com/ogc/wcs/"}
-
-# WAITING : up information should be all get from csw discovery
+# custom modules imports
+import utils
 
 
-# Used namespaces
-mundi_nsmap = {'atom'    : "http://www.w3.org/2005/Atom", \
-               'csw'     : "http://www.opengis.net/cat/csw/2.0.2", \
-               'dc'      : "http://purl.org/dc/elements/1.1/", \
-               'dct'     : "http://purl.org/dc/terms/", \
-               'DIAS'    : "http://tas/DIAS", \
-               'eo'      : "http://a9.com/-/spec/opensearch/extensions/eo/1.0/", \
-               'geo'     : "http://a9.com/-/opensearch/extensions/geo/1.0/", \
-               'georss'  : "http://www.georss.org/georss", \
-               'media'   : "http://search.yahoo.com/mrss/", \
-               'os'      : "http://a9.com/-/spec/opensearch/1.1/", \
-               'ows'     : "http://www.opengis.net/ows" , \
-               'param'   : "http://a9.com/-/spec/opensearch/extensions/parameters/1.0/", \
-               'referrer': "http://www.opensearch.org/Specifications/OpenSearch/Extensions/Referrer/1.0", \
-               'sru'     : "http://a9.com/-/opensearch/extensions/sru/2.0/", \
-               'time'    : "http://a9.com/-/opensearch/extensions/time/1.0/", \
-               'xmlns'   : "http://www.w3.org/2001/XMLSchema", \
-               'xsi'     : "http://www.w3.org/2001/XMLSchema-instance"}
+# Mundi collections ids
+# TODO: addition of other ids (from Landsat, Sentinel3, ...)
+MUNDI_COLLECTION_IDS = {
+    'Sentinel1-GRD': "88b68ca0-1f84-4286-8359-d3f480771de5",
+    'Sentinel2-L1C': "d275ef59-3f26-4466-9a60-ff837e572144",
+    'Sentinel2-L2A': "ea23bfb3-2a67-476f-90e3-fe54873ff897",
+    'Sentinel5P-L2': "9400667f-cb51-4509-8827-44232ccd507f"
+}
+
+# web services endpoints
+MUNDI_SERVICES_ENDPOINTS = {
+    'wms': "http://shservices.mundiwebservices.com/ogc/wms/",
+    'wmts': "http://shservices.mundiwebservices.com/ogc/wmts/",
+    'wfs': "http://shservices.mundiwebservices.com/ogc/wfs/",
+    'wcs': "http://shservices.mundiwebservices.com/ogc/wcs/"
+}
+
+# NOTE: above information should be gotten from CSW discovery
+
+# all namespaces used by Mundi
+MUNDI_NAMESPACES = {
+    'atom': "http://www.w3.org/2005/Atom",
+    'csw': "http://www.opengis.net/cat/csw/2.0.2",
+    'dc': "http://purl.org/dc/elements/1.1/",
+    'dct': "http://purl.org/dc/terms/",
+    'DIAS': "http://tas/DIAS",
+    'eo': "http://a9.com/-/spec/opensearch/extensions/eo/1.0/",
+    'geo': "http://a9.com/-/opensearch/extensions/geo/1.0/",
+    'georss': "http://www.georss.org/georss",
+    'media': "http://search.yahoo.com/mrss/",
+    'os': "http://a9.com/-/spec/opensearch/1.1/",
+    'ows': "http://www.opengis.net/ows",
+    'param': "http://a9.com/-/spec/opensearch/extensions/parameters/1.0/",
+    'referrer': "http://www.opensearch.org/Specifications/OpenSearch/Extensions/Referrer/1.0",
+    'sru': "http://a9.com/-/opensearch/extensions/sru/2.0/",
+    'time': "http://a9.com/-/opensearch/extensions/time/1.0/",
+    'xmlns': "http://www.w3.org/2001/XMLSchema",
+    'xsi': "http://www.w3.org/2001/XMLSchema-instance"
+}
+
+# logger config
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+sh = logging.StreamHandler()
+sh.setLevel(logging.INFO)
+sh.setFormatter(logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s'))
+logger.addHandler(sh)
 
 
+# --------------------------
+#  EXCEPTIONS
+# --------------------------
+class ErrorMessages:
+    UNSUPPORTED_SERVICE = "Unsupported web service version requested."
+    UNAVAILABLE_COLLECTION = "Unavailable collection."
+    UNAVAILABLE_COLLECTION_SERVICE = "Unavailable service on collection."
 
-# ----------------------------------------------------------------
-#  mundi catalogue class
-# ----------------------------------------------------------------
-class mundiCatalogue():
-       
-    # opensearchDescription
-    osdd = ""
+
+class MundiException(Exception):
+    pass
+
+
+# --------------------------
+# CATALOGUE
+# --------------------------
+class MundiCatalogue:
     # csw entry point
     csw_end_point = "https://mundiwebservices.com/acdc/catalog/proxy/search/global/csw"
-    
-    # lis of mundiCollection object
-    _collections = []
-    
+
     def __init__(self):
-        """Constructor"""
-        osdd_file = "https://mundiwebservices.com/acdc/catalog/proxy/search/collections/opensearch/description.xml"
-        self.osdd = opensearchDescription(osdd_file)
-        # getting 'platforms' from osdd file
-        platforms = self.osdd.findall('.//param:Parameter[@name="platform"]/param:Option')
+        # OpenSearch description
+        self.opensearch_description = OpenSearchDescription(
+            "https://mundiwebservices.com/acdc/catalog/proxy/search/collections/opensearch/description.xml")
+
+        # getting 'platforms' from opensearch_description file
+        platforms = self.opensearch_description.findall('.//param:Parameter[@name="platform"]/param:Option')
         mundi_platforms = sorted(set([p.get('value') for p in platforms]))
-        for p in mundi_platforms:
-            self._collections.append(mundiCollection(p))
-    
-    def getCollections(self):
-        return self._collections
-    
-    def getCollection(self, name):
-        mc = ""
-        for c in self._collections:
+
+        # fill collections property with MundiCollection for all supported platforms
+        self.collections = [MundiCollection(p) for p in mundi_platforms]
+
+    def get_collection(self, name):
+        """
+        Get a collection from this instance's collections list
+
+        :param name: name of the collection
+        :return: the collection as a MundiCollection instance
+        """
+        for c in self.collections:
             if c.name == name:
-                mc = c
-        if mc == "":
-            raise mundiException(UNAVAILABLE_COLLECTION)
-        return mc
-    
-    # --- CSW web service ---
-    def mundi_csw(self, version = "2.0.2"):
+                return c
+
+        raise MundiException(ErrorMessages.UNAVAILABLE_COLLECTION)
+
+    def mundi_csw(self, version="2.0.2"):
+        """
+        Get a MundiCSW instance
+
+        :param version: CSW version. Defaults to 2.0.2
+        :return: a MundiCSW instance
+        """
         if version in ["2.0.2"]:
-            csw = mundiCatalogueServiceWeb(self.csw_end_point, version)
+            return MundiCSW(self.csw_end_point, version)
         else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return csw    
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
+
+    # ---------------------------------
+    # Functions for retro compatibility
+    # ---------------------------------
+    def get_collections(self):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "collections" property instead')
+        return self.collections
+
+    def getCollections(self):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "collections" property instead')
+        return self.collections
+
+    def getCollection(self, name):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "get_collection" function instead')
+        return self.get_collection(name)
 
 
+# --------------------------
+# CSW
+# --------------------------
+class MundiCSW(CatalogueServiceWeb):
 
-# ----------------------------------------------------------------
-#  mundi catalogue web service class
-# ----------------------------------------------------------------
-class mundiCatalogueServiceWeb(CatalogueServiceWeb):
-    
     def __init__(self, url, version):
-        """Constructor"""
+        self.records = None
         super().__init__(url, version)
-        
-    # get metadata list (name:value) as dictionnary
-    # As indicated in 'describerecord' from 'owslib/csw' here is done following:
-    # TODO: process the XML Schema (you're on your own for now with self.response)
-    def mundidescriberecord(self):
-            
+
+    def describe_record(self):
+        """
+        Send a DescribeRecord request and process it. Return metadata as a dict
+
+        :return: as dict of metadata
+        """
         # getting root node from 'DescribeRecord' request
+        # from https://github.com/geopython/OWSLib/blob/master/owslib/csw.py:
+        # TODO: process the XML Schema (you're on your own for now with self.response)
         self.describerecord(typename='csw:Record', format='application/xml')
-        root = lxml.etree.fromstring(self.response)
-        
-        # getting node containing all elements 
+        root = etree.fromstring(self.response)
+
+        # getting node containing all elements
         # (i.e. '<complexType name="RecordType" final="#all">')
-        node = root.find('.//csw:SchemaComponent/xmlns:schema/xmlns:complexType[@name="RecordType"]', namespaces=mundi_nsmap)
-        nodes = node.findall('.//*xmlns:element', namespaces=mundi_nsmap)
+        node = root.find('.//csw:SchemaComponent/xmlns:schema/xmlns:complexType[@name="RecordType"]',
+                         namespaces=MUNDI_NAMESPACES)
+        nodes = node.findall('.//*xmlns:element', namespaces=MUNDI_NAMESPACES)
 
-        elems = {}
+        elements = {}
         for n in nodes:
-            d = n.find(".//*xmlns:documentation", namespaces=mundi_nsmap)
+            d = n.find(".//*xmlns:documentation", namespaces=MUNDI_NAMESPACES)
             if d is not None:
-                elems[n.get('ref')] = d.text.replace("\n","")   
-        return elems
+                elements[n.get('ref')] = d.text.replace("\n", "")
+        return elements
 
-    # 'GetRecords' returning all request records from on all pages
-    def mundigetrecords2(self, xml):
-        # removing unrelevant information from given payload
-        payload = xml.strip()
-            
-        # all 'csw:Record' dictionnary from 'GetRecords' request pages
+    def get_records(self, maxrecords=50, **kwargs):
+        """
+        Send a GetRecords request. The results are stored in self.records property.
+
+        :param kwargs: see OWSLib's getrecords2 (https://github.com/geopython/OWSLib/blob/master/owslib/csw.py).
+        A hint: if "xml" argument is passed (raw WML request), other arguments are ignored. Also, if maxrecords exceeds
+        50, getrecords2 is called multiple times to get maxrecords records (or less if less are found)
+        """
+        # has xml argument been passed?
+        try:
+            payload = kwargs['xml'].strip()
+        except KeyError:
+            payload = None
+
+        # all 'csw:Record' dict from 'GetRecords' request pages
         all_records = OrderedDict()
-        
-        # getting first page (i.e. 'page0')
-        self.getrecords2(xml=payload)
-        all_records.update(self.records)
-        page0 = lxml.etree.fromstring(self.response)
-        
-        sr_node = page0.find('csw:SearchResults', namespaces=mundi_nsmap)
-        nb_total    = int(sr_node.get("numberOfRecordsMatched"))
-        nb_set      = int(sr_node.get("numberOfRecordsReturned"))
-        next_record = int(sr_node.get("nextRecord"))
-        
-        # calculation of page number
-        if (nb_total == 0):
-            nbPages = 1
-        else:
-            nbPages = ceil(nb_total/nb_set)
-        
-        # getting other/next pages (i.e. 'pageN')
-        i = 1
-        while (i < nbPages):
-            # modifying payload with new start position
-            node_p = lxml.etree.fromstring(payload)
-            node_p.set('startPosition', str(next_record))
-            payload = lxml.etree.tostring(node_p, pretty_print=True) 
-            self.getrecords2(xml=payload)
-            pageN = lxml.etree.fromstring(self.response)
-            sr_node = pageN.find('csw:SearchResults', namespaces=mundi_nsmap)
-            next_record = int(sr_node.get("nextRecord"))
+
+        while True:
+            # set kwargs' maxrecords according to how many records we want (doesn't matter if it exceeds 50)
+            kwargs['maxrecords'] = min(maxrecords, maxrecords - len(all_records))
+
+            # get next page by using OWSLib's getrecords2
+            if payload is None:
+                self.getrecords2(**kwargs)
+            else:
+                self.getrecords2(xml=payload)
+
+            # store found records in all_records
             all_records.update(self.records)
-            # go next page
-            i += 1
+
+            # stop if records reached limit
+            if len(all_records) >= maxrecords:
+                break
+
+            next_record = self.results['nextrecord']
+            # if next_record is "0", we got all records
+            if next_record == 0:
+                break
+
+            # else, update start position
+            if payload is None:
+                kwargs['startposition'] = next_record
+            else:
+                payload_xml = etree.fromstring(payload)
+                payload_xml.set('startPosition', str(next_record))
+                payload = etree.tostring(payload_xml, pretty_print=True, encoding='unicode')
+
         self.records = all_records
 
-    # get volume of records of a 'GetRecords' request (i.e. 'productDatapackSize' value sum)
-    # expressed in TB
-    def mundigetvolrecords2(self, xml):
-        self.mundigetrecords2(xml=xml)
+    def get_volume_records(self, **kwargs):
+        """
+        Get an approximation of the total volume of records matched by a request
+        (ie, sum of records' productDatapackSize)
+
+        :param kwargs: see OWSLib's getrecords2 (https://github.com/geopython/OWSLib/blob/master/owslib/csw.py).
+        A hint: if "xml" argument is passed (raw WML request), other arguments are ignored. Therefore, if using "xml",
+        productDatapackSize should be requested (<ElementSetName>full</ElementSetName> or
+        <ElementName>productDatapackSize</ElementName>)
+        :return: sum of all productDatapackSize in TB
+        """
+        # we need to get all records at first
+        kwargs['esn'] = 'full'
+        self.get_records(**kwargs)
+
+        # sum of DIAS:productDatapackSize
         volume = 0
+        for csw_record in self.records.values():
+            node = etree.fromstring(csw_record.xml)
+            node_size = node.find("DIAS:productDatapackSize", namespaces=MUNDI_NAMESPACES)
+            if node_size is not None:
+                volume += float(node_size.text)
 
-        # sum of '<DIAS:productDatapackSize>'
-        for name, cswRecord in self.records.items():
-            node = lxml.etree.fromstring(cswRecord.xml)
-            node_size = node.find("DIAS:productDatapackSize", namespaces=mundi_nsmap)
-            volume += float(node_size.text) / 1000 / 1000 / 1000
-        volume = round(volume, 2)
-        return volume
+        # convert to TB and round to two decimals
+        return round(volume / 1024 ** 4, 2)
 
-    # get number of records of a 'GetRecords' request (i.e. 'numberOfRecordsMatched' value)
-    def mundigetnbrecords2(self, xml):
-        # removing unrelevant information from given payload
-        payload = xml.strip()
-        
-        # getting only first page (i.e. 'page0')
-        self.getrecords2(xml=payload)
-        page0 = lxml.etree.fromstring(self.response)
-        
+    def get_nb_records(self, **kwargs):
+        """
+        Get number of records matched by a GetRecord request
+
+        :param kwargs: see OWSLib's getrecords2 (https://github.com/geopython/OWSLib/blob/master/owslib/csw.py).
+        A hint: if "xml" argument is passed (raw WML request), other arguments are ignored. "maxrecords" is ignored
+        and set to 0.
+        :return: number of records (i.e. 'numberOfRecordsMatched' value)
+        """
+        kwargs['maxrecords'] = 0
+
+        # get only first page
+        self.getrecords2(**kwargs)
+        response_xml = etree.fromstring(self.response)
+
         # 'numberOfRecordsMatched'
-        sr_node = page0.find('csw:SearchResults', namespaces=mundi_nsmap)
-        nb = int(sr_node.get("numberOfRecordsMatched"))
-        return nb
-        
-      
-        
-# ----------------------------------------------------------------
-#  mundi collection class
-# ----------------------------------------------------------------
-class mundiCollection:
-    
-    # collection name
-    name = ""
-    # opensearchDescription
-    osdd = ""
-    # end point of 'csw' web service for current collection
-    csw_end_point  = ""
-    
-    def __init__(self, name):
-        """Constructor"""
+        search_results_xml = response_xml.find('csw:SearchResults', namespaces=MUNDI_NAMESPACES)
+        return int(search_results_xml.get('numberOfRecordsMatched'))
+
+    # ---------------------------------
+    # Functions for retro compatibility
+    # ---------------------------------
+    def mundigetrecords2(self, xml):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "get_records" function instead')
+        return self.get_records(xml=xml)
+
+    def mundigetvolrecords2(self, xml):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "get_volume_records" function instead')
+        return self.get_volume_records(xml=xml)
+
+    def mundigetnbrecords2(self, xml):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "get_nb_records" function instead')
+        return self.get_nb_records(xml=xml)
+
+
+# --------------------------
+# COLLECTION
+# --------------------------
+class MundiCollection:
+
+    def __init__(self, name: str):
+        # collection name, formatted as in catalog URIs
         self.name = name
-        osdd_file = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch/description.xml".replace('{mundi_collection}', self.name)
-        self.osdd = opensearchDescription(osdd_file)
-        self.csw_end_point = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/csw?service=CSW".replace('{mundi_collection}', self.name)
-        
-    # get web service endpoint url
-    def _serviceEndPoint(self, service):
-        if (self.name in mundi_id):
-            ep = mundi_services[service] + mundi_id[self.name]
-        else:
-            raise mundiException(UNAVAILABLE_COLLECTION_SERVICE)
-        return ep
-    
-    # get 'productType' nodes
-    def productTypes(self):
-        list = self.osdd.find('.//param:Parameter[@name="productType"]')
-        if list is None:
-            list = []
-        return list
 
-    # get 'processingLevel' nodes
-    def processingLevels(self):
-        list = self.osdd.find('.//param:Parameter[@name="processingLevel"]')
-        if list is None:
-            list = []
-        return list
+        # OpenSearch description
+        self.opensearch_description = OpenSearchDescription(
+            f'https://mundiwebservices.com/acdc/catalog/proxy/search/{self.name}/opensearch/description.xml')
 
-    # --- CSW web service ---
-    def mundi_csw(self, version = "2.0.2"):
+        # CSW endpoint for this collection
+        self.csw_endpoint = f'https://mundiwebservices.com/acdc/catalog/proxy/search/{self.name}/csw?service=CSW'
+
+    def _service_end_point(self, service: str, dataset: str) -> str:
+        """Get service endpoint"""
+        try:
+            return MUNDI_SERVICES_ENDPOINTS[service] + MUNDI_COLLECTION_IDS[f'{self.name}-{dataset}']
+        except KeyError:
+            raise MundiException(ErrorMessages.UNAVAILABLE_COLLECTION_SERVICE)
+
+    @property
+    def product_types(self) -> Dict:
+        """
+        Get supported product types for this collection
+
+        :return: all product types for this collection as a dict of {value: label}
+        """
+        product_type_xml = self.opensearch_description.findall('.//param:Parameter[@name="productType"]/param:Option')
+        res = {}
+
+        if product_type_xml is not None:
+            for option in product_type_xml:
+                res[option.get('value')] = option.get('label')
+
+        return res
+
+    @property
+    def processing_levels(self) -> Dict:
+        """
+        Get supported processing levels for this collection
+
+        :return: all processing levels for this collection as a dict of {value: label}
+        """
+        processing_levels_xml = self.opensearch_description.findall(
+            './/param:Parameter[@name="processingLevel"]/param:Option')
+        res = {}
+
+        if processing_levels_xml is not None:
+            for option in processing_levels_xml:
+                res[option.get('value')] = option.get('label')
+
+        return res
+
+    def mundi_csw(self, version: str = "2.0.2") -> MundiCSW:
+        """
+        Get a MundiCSW instance for this collection
+
+        :param version: CSW version
+        :return: a MundiCSW instance
+        """
         if version in ["2.0.2"]:
-            csw = mundiCatalogueServiceWeb(self.csw_end_point, version)
+            return MundiCSW(self.csw_endpoint, version)
         else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return csw    
-    
-    # --- WMS web service ---
-    def mundi_wms(self, version = "1.3.0"):
-        if version in ["1.3.0", "1.1.1"]:
-            wms = WebMapService(self._serviceEndPoint('wms'), version)
-        else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return wms
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
 
-    # --- WMTS web service ---
-    def mundi_wmts(self, version="1.0.0"):
+    def mundi_wms(self, dataset: str, version: str = "1.3.0") -> WebMapService:
+        """
+        Get a WebMapService instance for this collection
+
+        :param dataset: the target dataset (eg, "L1C" if collection is "Sentinel1"
+        :param version: WMS version (supported versions are: 1.1.1, 1.3.0)
+        :return: a WebMapService instance
+        """
+        if version in ["1.1.1", "1.3.0"]:
+            return WebMapService(self._service_end_point('wms', dataset), version)
+        else:
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
+
+    def mundi_wmts(self, dataset: str, version: str = "1.0.0") -> WebMapTileService:
+        """
+        Get a WebMapTileService instance for this collection
+
+        :param dataset: the target dataset (eg, "L1C" if collection is "Sentinel1"
+        :param version: WMTS version (only 1.0.0 is supported)
+        :return: a WebMapTileService instance
+        """
         if version in ["1.0.0"]:
-            wmts = WebMapTileService(self._serviceEndPoint('wmts'), version)
+            return WebMapTileService(self._service_end_point('wmts', dataset), version)
         else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return wmts
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
 
-    # --- WFS web service ---
-    def mundi_wfs(self, version="2.0.0"):
+    def mundi_wfs(self, dataset: str, version: str = "2.0.0") -> WebFeatureService:
+        """
+        Get a WebFeatureService instance for this collection
+
+        :param dataset: the target dataset (eg, "L1C" if collection is "Sentinel1"
+        :param version: WFS version (only 2.0.0 is supported)
+        :return: a WebFeatureService instance
+        """
         if version in ["2.0.0"]:
-            wfs = WebFeatureService(self._serviceEndPoint('wfs'), version)
+            return WebFeatureService(self._service_end_point('wfs', dataset), version)
         else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return wfs
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
 
-    #  --- WCS web service ---
-    # Supported versions are: 1.0.0, 1.1.0, 1.1.1 and 1.1.2
-    def mundi_wcs(self, version="1.0.0"):
+    def mundi_wcs(self, dataset: str, version: str = "1.0.0") -> WebCoverageService:
+        """
+        Get a WebCoverageService instance for this collection
+
+        :param dataset: the target dataset (eg, "L1C" if collection is "Sentinel1"
+        :param version: WCS version (supported versions are: 1.0.0, 1.1.0, 1.1.1, 1.1.2)
+        :return: a WebCoverageService instance
+        """
         if version in ["1.0.0", "1.1.0", "1.1.1", "1.1.2"]:
-            wcs = WebCoverageService(self._serviceEndPoint('wcs'), version)
+            return WebCoverageService(self._service_end_point('wcs', dataset), version)
         else:
-            raise mundiException(UNSUPPORTED_SERVICE)         
-        return wcs 
+            raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
+
+    # ---------------------------------
+    # Functions for retro compatibility
+    # ---------------------------------
+    def productTypes(self):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "product_types" property instead')
+        return self.product_types
+
+    def processingLevels(self):
+        logger.warning(
+            'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+            'future versions, please consider using "processing_levels" property instead')
+        return self.processing_levels
 
 
+# --------------------------
+# CSW RECORD
+# --------------------------
+def get_node(csw_record: CswRecord, child_name: str):
+    """
+    Get the child of a CswRecord instance
 
-# ----------------------------------------------------------------
-#  methods on cswRecord
-# ----------------------------------------------------------------
-def findnode(cswRecord, match):    
-    root_node  = lxml.etree.fromstring(cswRecord.xml)
-    match_node = root_node.find(match, namespaces=mundi_nsmap)
-    return match_node
+    :param csw_record: the CswRecord instance
+    :param child_name: the name of the child to retrieve
+    :return: an etree.Element for this child
+    """
+    root_node = etree.fromstring(csw_record.xml)
+    return root_node.find(child_name, namespaces=MUNDI_NAMESPACES)
 
 
+# For retro compatibility
+def findnode(cswRecord: CswRecord, match: str):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "get_node" function instead')
+    return get_node(cswRecord, match)
 
-# ----------------------------------------------------------------
-#  methods on ResponseWrapper
-# ----------------------------------------------------------------
-def _findentries(ResponseWrapper):
-    root_node  = lxml.etree.fromstring(ResponseWrapper.read())
-    entries = root_node.findall("atom:entry", namespaces=mundi_nsmap)
-    return entries
 
-def findentries(ResponseWrapper_list):
+# --------------------------
+# RESPONSE WRAPPER
+# --------------------------
+def _find_entries(response_wrapper: ResponseWrapper):
+    """
+    Find all atom:entry elements in a ResponseWrapper instance
+
+    :param response_wrapper: the ResponseWrapper instance
+    :return: a list of etree.Element whose tags are atom:entry
+    """
+    root_node = etree.fromstring(response_wrapper.read())
+    return root_node.findall('atom:entry', namespaces=MUNDI_NAMESPACES)
+
+
+def find_entries(response_wrappers: List[ResponseWrapper]):
+    """
+    Find all atom:entry elements in a list of ResponseWrappers
+
+    :param response_wrappers: the list of ResponseWrappers
+    :return: a list of etree.Element whose tags are atom:entry
+    """
     entries = []
-    for rw in ResponseWrapper_list:
-        el = _findentries(rw)
-        for entry in el:
-            entries.append(entry)
+    for rw in response_wrappers:
+        entries += _find_entries(rw)
     return entries
 
 
-    
-# ----------------------------------------------------------------
-#  opensearch description file class
-# ----------------------------------------------------------------
-class opensearchDescription:
-   
-    # 'description.xml' file url
-    desc_file = ""
-    # osdd document root node
-    root = ""
-    
-    def __init__(self, osdd):
-        page = openURL(osdd, method='Get')
-        response_wrapper = page.read()
-        self.root = lxml.etree.fromstring(response_wrapper)
-
-    # surcharge to use namespaces
-    def xpath(self, query):
-        return self.root.xpath(query, namespaces=mundi_nsmap)
-    
-    # surcharge to use namespaces
-    def find(self, query):
-        return self.root.find(query, namespaces=mundi_nsmap)
-
-    # surcharge to use namespaces
-    def findall(self, query):
-        return self.root.findall(query, namespaces=mundi_nsmap)
+# For retro compatibility
+def findentries(ListResponseWrapper):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "find_entries" function instead')
+    return find_entries(ListResponseWrapper)
 
 
-    
-# ----------------------------------------------------------------
-#  opensearch methods
-# ----------------------------------------------------------------
-# get list of ResponseWrapper from a given open search request
-def mundiopenURL2(col="", query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
-            
-    if col != "":
-        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
+# --------------------------
+# OPENSEARCH
+# --------------------------
+class OpenSearchDescription:
+    def __init__(self, opensearch_document_url: str):
+        # root node of OS description document
+        self.root = etree.fromstring(openURL(opensearch_document_url, method='Get').read())
+
+    def xpath(self, query: str) -> List[etree.Element]:
+        return self.root.xpath(query, namespaces=MUNDI_NAMESPACES)
+
+    def find(self, query: str) -> etree.Element:
+        return self.root.find(query, namespaces=MUNDI_NAMESPACES)
+
+    def findall(self, query: str) -> List[etree.Element]:
+        return self.root.findall(query, namespaces=MUNDI_NAMESPACES)
+
+
+def opensearch_query(collection=None, query='', data=None, method='Get', cookies=None, username=None, password=None,
+                     timeout=30, headers=None, verify=True, cert=None, params=None):
+    """Get a list of ResponseWrappers from a given OpenSearch request"""
+    # if params is provided, query is ignored
+    if params is not None:
+        query = '&'.join(f'{k}={v}' for k, v in params.items())
+
+    # build base request URI
+    if collection is None:
+        os_query_base = f'https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?{query}'
     else:
-        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?" + query
-    
+        os_query_base = f'https://mundiwebservices.com/acdc/catalog/proxy/search/{collection.name}/opensearch?{query}'
+
+    # loop through all matched records
     response_wrappers = []
-    
-    # getting first page (i.e. 'page0')
-    page0 = openURL(os_query, data, method, cookies, username, password, timeout, headers, verify, cert)
-    response_wrapper_0 = page0.read()
-    rw0_node = lxml.etree.fromstring(response_wrapper_0)
-    response_wrappers.append(page0)
-    
-    nb_total    = int(rw0_node.xpath('os:totalResults', namespaces=mundi_nsmap)[0].text)
-    nb_set      = int(rw0_node.xpath('os:itemsPerPage', namespaces=mundi_nsmap)[0].text)
-    start_index = int(rw0_node.xpath('os:startIndex', namespaces=mundi_nsmap)[0].text)
-    
-    next_record = start_index + nb_set
-    
-    # calculation of page number
-    if (nb_total == 0):
-        nbPages = 1
-    else:
-        nbPages = ceil(nb_total/nb_set)
-    
-    # getting other/next pages (i.e. 'pageN')
-    i = 1
-    while (i < nbPages):
-        # modifying payload with new start position
-        os_query_N = os_query + "&startIndex=" + str(next_record)
-        page_N = openURL(os_query_N, data, method, cookies, username, password, timeout, headers, verify, cert)
-        response_wrappers.append(page_N)
-    
-        next_record += nb_set
-        # go next page
-        i += 1
-    
+    os_query = f'{os_query_base}&startIndex=1'
+    while True:
+        # get current page
+        page = openURL(os_query, data, method, cookies, username, password, timeout, headers, verify, cert)
+        response_wrapper = page.read()
+        response_wrapper_xml = etree.fromstring(response_wrapper)
+        response_wrappers.append(page)
+
+        nb_total = int(response_wrapper_xml.find('os:totalResults', namespaces=MUNDI_NAMESPACES).text)
+        nb_page = int(response_wrapper_xml.find('os:itemsPerPage', namespaces=MUNDI_NAMESPACES).text)
+        start_index = int(response_wrapper_xml.find('os:startIndex', namespaces=MUNDI_NAMESPACES).text)
+
+        next_record = start_index + nb_page
+        if next_record > nb_total:
+            break
+
+        os_query = f'{os_query_base}&startIndex={next_record}'
+
     return response_wrappers
 
 
-# get number of results from a given open search request
-def mundinbopenURL2(col="", query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30, headers=None, verify=True, cert=None):
-            
-    if col != "":
-        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/{mundi_collection}/opensearch?".replace('{mundi_collection}', col.name) + query
+def opensearch_nb_results(collection=None, query="", data=None, method='Get', cookies=None, username=None,
+                          password=None, timeout=30, headers=None, verify=True, cert=None, params=None):
+    """Get the number of results from an OpenSearch request"""
+    # if params is provided, query is ignored
+    if params is not None:
+        query = '&'.join(f'{k}={v}' for k, v in params.items())
+
+    # build base request URI
+    if collection is None:
+        os_query = f'https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?{query}'
     else:
-        os_query = "https://mundiwebservices.com/acdc/catalog/proxy/search/global/opensearch?" + query
-    
-    # getting first page (i.e. 'page0')
-    page0 = openURL(os_query, data, method, cookies, username, password, timeout, headers, verify, cert)
-    response_wrapper_0 = page0.read()
-    rw0_node = lxml.etree.fromstring(response_wrapper_0)
-    
-    nb = int(rw0_node.xpath('os:totalResults', namespaces=mundi_nsmap)[0].text)
-    
-    return nb
+        os_query = f'https://mundiwebservices.com/acdc/catalog/proxy/search/{collection.name}/opensearch?{query}'
+
+    # only get first page to read number of results
+    page = openURL(os_query, data, method, cookies, username, password, timeout, headers, verify, cert)
+    response_wrapper = page.read()
+    response_wrapper_xml = etree.fromstring(response_wrapper)
+
+    return int(response_wrapper_xml.find('os:totalResults', namespaces=MUNDI_NAMESPACES).text)
 
 
-        
-# ----------------------------------------------------------------
-#  EXCEPTIONS MANAGEMENT - mundi specific exceptions declaration
-# ----------------------------------------------------------------
-    
-# mundi error messages
-UNSUPPORTED_SERVICE            = "Unsupported web service version requested."
-UNAVAILABLE_COLLECTION         = "Unavailable collection."
-UNAVAILABLE_COLLECTION_SERVICE = "Unavailable service on collection."
+# For retro compatibility
+def mundiopenURL2(col="", query="", data=None, method='Get', cookies=None, username=None, password=None, timeout=30,
+                  headers=None, verify=True, cert=None):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "opensearch_query" function instead')
+    return opensearch_query(col, query, data, method, cookies, username, password, timeout, headers, verify, cert)
 
-# mundi specific exceptions
-class mundiException(Exception):
-    """Exception raised for specific Mundi errors.
 
-    Attributes:
-        message -- explanation of the error
-    """
-
-    def __init__(self, message):
-        self.message = message
-      
-        
-        
-# ----------------------------------------------------------------
-#  toolbox - bbox
-# ----------------------------------------------------------------
-# get optimized witdh for a given heigth regarding a known bbox
+# --------------------------
+# RETRO COMPATIBILITY
+# --------------------------
 def width(bbox, height):
-    x1, y1, x2, y2 = bbox
-    width = int(height * (x2-x1) / (y2-y1))
-    return width
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.height2width" function instead')
+    return utils.height2width(bbox, height)
 
-# get optimized height for a given width regarding a known bbox
+
 def height(bbox, width):
-    x1, y1, x2, y2 = bbox
-    height = int(width * (y2-y1) / (x2-x1))
-    return height
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.width2height" function instead')
+    return utils.width2height(bbox, width)
+
+
+def polygon_bbox_country(country_name):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.country_polygon_bbox" function instead')
+    return utils.country_polygon_bbox(country_name)
+
+
+def display_polygon_country(country_name, a, color):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.display_country_on_world_map" function instead')
+    return utils.display_country_on_world_map(country_name, a, color)
+
+
+def polygon_bbox_city(city_name):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.city_polygon_bbox" function instead')
+    return utils.city_polygon_bbox(city_name)
+
+
+def display_city_wms(polygon, bbox, height, wms_layers, time):
+    logger.warning(
+        'This function will be removed in future versions of mundilib. In order to for you code to run with these '
+        'future versions, please consider using "utils.display_wms" function instead')
+    c = MundiCatalogue()
+    wms = c.get_collection('Sentinel2').mundi_wms('L1C')
+    return utils.display_wms(polygon, bbox, wms, wms_layers, time, height=512)
