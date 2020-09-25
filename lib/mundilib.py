@@ -11,11 +11,16 @@
 # Contact email: patricia.segonds@atos.net
 # =============================================================================
 
+from __future__ import annotations
+
 # standard library imports
 import logging
-from typing import Dict, List
+import os
+from os.path import basename, dirname, join
+from typing import Any, Dict, Iterable, List, Union
 
 # other imports
+import boto3
 from lxml import etree
 from owslib.csw import CatalogueServiceWeb, CswRecord
 from owslib.util import openURL, OrderedDict, ResponseWrapper
@@ -307,6 +312,111 @@ class MundiCSW(CatalogueServiceWeb):
 
 
 # --------------------------
+# DOWNLOADER
+# --------------------------
+class MundiDownloader:
+
+    def __init__(self, collection: MundiCollection, access_key: str, secret_key: str):
+        self.csw = collection.mundi_csw()
+        self.s3_client = boto3.client("s3", aws_access_key_id=access_key,
+                                      aws_secret_access_key=secret_key,
+                                      endpoint_url="https://obs.otc.t-systems.com")
+
+    @property
+    def records(self):
+        return self.csw.records
+
+    def browse(self, date_from: str = None, date_to: str = None, geometry: str = None,
+               bbox: Iterable[Union[float, int, str]] = None, other_fields: Dict[str, Any] = None):
+        """
+        Browse catalog and store results in "records" property.
+        :param date_from: date from which to search products
+        :param date_to: date until which to search products
+        :param geometry: a WKT geometry, basically a POLYGON, eg "POLYGON ((0 1, 2 1, 2 0, 0 0, 0 1))". Ignored if bbox is specified
+        :param bbox: a bounding box (longitude min, latitude min, longitude max, latitude max), eg (1., 0., 3., 4.)
+        :param other_fields: any other CQL filter terms, eg: {"DIAS:sensorMode": "IW_"}
+        """
+        # build CQL filter
+        cql_filter = f"DIAS:onlineStatus = ONLINE"
+        if date_from is not None:
+            cql_filter = f"{cql_filter} and DIAS:sensingStartDate > '{date_from}'"
+        if date_to is not None:
+            cql_filter = f"{cql_filter} and DIAS:sensingStartDate < '{date_to}'"
+
+        if bbox is not None:
+            cql_filter = f"{cql_filter} and BBOX(DIAS:footprint, {', '.join(str(x) for x in bbox)})"
+        # geometry must be ignored if bbox is specified
+        elif geometry is not None:
+            cql_filter = f"{cql_filter} and INTERSECTS(DIAS:footprint, {geometry})"
+
+        # add any other specified field
+        if other_fields is not None:
+            for field, value in other_fields.items():
+                cql_filter = f"{cql_filter} and {field} = '{value}'"
+
+        # search the catalog
+        self.csw.get_records(cql=cql_filter, esn="full")
+
+    def download(self, target_folder: str = "."):
+        """
+        Download products, based on "records" property content
+        :param target_folder: the folder where to download products
+        """
+        # iterate results & download them
+        for id_, record in self.records.items():
+            self._download_product(id_, record, target_folder)
+
+    def download_by_id(self, record_id: str, target_folder: str = "."):
+        """
+        Download a specific record
+        :param record_id: the identifier of this record
+        :param target_folder: the folder where to download this product
+        """
+        # retrieve the ID from the catalog
+        self.csw.get_records(cql=f"dc:identifier = {record_id}", esn="full")
+        try:
+            record = self.records[record_id]
+        except KeyError:
+            raise ValueError(f"Failed to find a record with ID '{record_id}'")
+
+        # download the product
+        self._download_product(record_id, record, target_folder)
+
+    def _download_product(self, record_id: str, record: CswRecord, target_folder: str):
+        logger.info(f"Downloading {record_id}")
+
+        # get bucket & prefix from URI
+        uri = get_node(record, "DIAS:archiveProductURI").text
+        bucket, prefix = uri.split(".com/")[-1].split("/", 1)
+
+        # find out what's within this prefix (there should not be more than 1000 keys)
+        list_contents = self.s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)["Contents"]
+
+        if len(list_contents) == 0:
+            logger.warning(f"Did not find any object at s3://{bucket}/{prefix}")
+            return
+        elif len(list_contents) == 1:
+            # there's a single file for this product, it is archived (zip)
+            key = list_contents[0]["Key"]
+            self._download_object(bucket, key, join(target_folder, basename(key)))
+        elif len(list_contents) > 1:
+            # create target folder
+            os.makedirs(target_folder, exist_ok=True)
+
+            # this product has been extracted, we must download all the keys one by one
+            for key in [x["Key"] for x in list_contents]:
+                target_path = join(target_folder, key.replace(dirname(prefix), "").lstrip("/"))
+                self._download_object(bucket, key, target_path)
+
+    def _download_object(self, bucket: str, key: str, target_path: str):
+        # create target folder
+        os.makedirs(dirname(target_path), exist_ok=True)
+
+        # download file
+        self.s3_client.download_file(Bucket=bucket, Key=key, Filename=target_path)
+
+
+# --------------------------
 # COLLECTION
 # --------------------------
 class MundiCollection:
@@ -425,6 +535,16 @@ class MundiCollection:
             return WebCoverageService(self._service_end_point('wcs', dataset), version)
         else:
             raise MundiException(ErrorMessages.UNSUPPORTED_SERVICE)
+
+    def mundi_downloader(self, access_key: str, secret_key: str) -> MundiDownloader:
+        """
+        Get a MundiDownloader for this collection
+
+        :param access_key: the access key to authenticate the user to access buckets
+        :param secret_key: the secret key to authenticate the user to access buckets
+        :return: a MundiDownloader instance
+        """
+        return MundiDownloader(self, access_key, secret_key)
 
     # ---------------------------------
     # Functions for retro compatibility

@@ -1,5 +1,4 @@
 import os 
-os.environ["PROJ_LIB"] = r"c:\Users\a766113\AppData\Local\Continuum\anaconda3\envs\mundi-final\Library\share"
 
 import geopandas as gpd
 import math
@@ -10,7 +9,7 @@ import folium
 from IPython.display import display
 from PIL import Image
 
-
+os.environ["PROJ_LIB"] = r"c:\Users\a766113\AppData\Local\Continuum\anaconda3\envs\mundi-final\Library\share"
 
 
 # --------------------------
