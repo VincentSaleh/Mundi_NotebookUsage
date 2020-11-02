@@ -5,16 +5,17 @@
 import datetime
 import glob
 import imageio
-import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import urllib
-import xml.etree.ElementTree as ET
 
+import ipywidgets as widgets
+import xml.etree.ElementTree as ET
 from IPython.display import clear_output, display, HTML
-from mundilib import MundiCatalogue
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from mundilib import MundiCatalogue
 from utils import city_polygon_bbox
 
 # --------------------------
@@ -60,6 +61,10 @@ DICT_LAYER = {
                       ('O3', 23),
                       ('O3_VISUALIZED', 24), ('SO2', 25), ('SO2_VISUALIZED', 26)]
 }
+
+# Logos URL
+URL_LOGO_WHITE = 'https://mundiwebservices.com/build/assets/Mundi-Logo-CMYK-white.png'
+URL_LOGO_COLORS = 'https://mundiwebservices.com/build/assets/Mundi-Logo-CMYK-colors.png'
 
 # Path to the Mundi Font
 TTF_PATH = "/home/jovyan/lib/dependencies/fonts/poppins-light.ttf"
@@ -167,16 +172,17 @@ def get_date(bbox, height, width, wms_layers, time, satellite, collection):
     return date
 
 
-def add_logo(image, logo_white):
+def add_logo(image, logo_white, border=True):
     """This function pastes a logo on an image
 
     Parameters
     ----------
     image: PIL.PngImagePlugin.PngImageFile
         The original image onto which you want to add a logo
-    logo: PIL.PngImagePlugin.PngImageFile
+    logo_white: PIL.PngImagePlugin.PngImageFile
         The logo you want to add to your image
-
+    border: bool
+        Whether to add a border ot the logo
     """
 
     # Resize Logo white
@@ -186,19 +192,20 @@ def add_logo(image, logo_white):
 
     simage = logo_white.resize((wsize, hsize))
 
-    # Changing the logo color to white
-    logo_black = ImageOps.colorize(simage.convert('L'), black="blue", white="black")
+    if border:
+        # Changing the logo color to white
+        logo_black = ImageOps.colorize(simage.convert('L'), black="blue", white="black")
 
-    # Adding black border to the image
-    border = 1
-    box1 = (int(0.08 * image.size[1]) - border, int(0.035 * image.size[0]) - border)
-    image.paste(logo_black, box1, simage)
-    box2 = (int(0.08 * image.size[1]) + border, int(0.035 * image.size[0]) - border)
-    image.paste(logo_black, box2, simage)
-    box3 = (int(0.08 * image.size[1]) - border, int(0.035 * image.size[0]) + border)
-    image.paste(logo_black, box3, simage)
-    box4 = (int(0.08 * image.size[1]) + border, int(0.035 * image.size[0]) + border)
-    image.paste(logo_black, box4, simage)
+        # Adding black border to the image
+        border_size = 1
+        box1 = (int(0.08 * image.size[1]) - border_size, int(0.035 * image.size[0]) - border_size)
+        image.paste(logo_black, box1, simage)
+        box2 = (int(0.08 * image.size[1]) + border_size, int(0.035 * image.size[0]) - border_size)
+        image.paste(logo_black, box2, simage)
+        box3 = (int(0.08 * image.size[1]) - border_size, int(0.035 * image.size[0]) + border_size)
+        image.paste(logo_black, box3, simage)
+        box4 = (int(0.08 * image.size[1]) + border_size, int(0.035 * image.size[0]) + border_size)
+        image.paste(logo_black, box4, simage)
 
     # Left top corner
     box = (int(0.08 * image.size[1]), int(0.035 * image.size[0]))
@@ -231,7 +238,6 @@ def download_images(bbox, collection, layer, start_date, stop_date,
         The height (in pixels) of the returned image
     width: int
         The width (in pixels) of the returned image
-
     """
 
     # Emptying the folder with images
@@ -245,9 +251,8 @@ def download_images(bbox, collection, layer, start_date, stop_date,
     current_date = start_date
 
     # Importing Mundi_logo
-    logo_white = Image.open(
-        urllib.request.urlopen('https://mundiwebservices.com/build/assets/Mundi-Logo-CMYK-white.png'))
-    logo_white.mode = ('RGBA')
+    logo_white = Image.open(urllib.request.urlopen(URL_LOGO_WHITE))
+    logo_white.mode = 'RGBA'
 
     clear_output(wait=True)
     k = str(int((stop_date - current_date).days / delta_days))
@@ -299,8 +304,10 @@ def download_images(bbox, collection, layer, start_date, stop_date,
     print("All images downloaded on time !")
 
 
-def generate_gif_from_folder(duration, output_name, end_gif_duration):
-    """This functions generates the GIF file from the files in your /work/gif_images
+def generate_gif_from_folder(duration, output_name, end_gif_duration, folder=SAVE_FOLDER_IMAGES, logo_url=None,
+                             sort_key=lambda y: int(y.split(".")[0]), accepted_extensions=None, display_texts=None,
+                             display_text_font_size=lambda img: int(img.width / 20)):
+    f"""This functions generates the GIF file from the files in your /work/gif_images
 
     Parameters
     ----------
@@ -308,22 +315,74 @@ def generate_gif_from_folder(duration, output_name, end_gif_duration):
         The duration (in seconds) of the GIF
     output_name: string
         The name of your GIF file
+    end_gif_duration: int
+        The last image of the GIF will be repeated this number of times
+    folder: str
+        Path to the folder in which the images are. The images filenames must be an incremented integer: the output GIF
+        consists of the images sorted by filename. Defaults to "{SAVE_FOLDER_IMAGES}"
+    logo_url: str
+        An URL leading to a logo to add on the upper left corner of the images. If None, no logo is added (default)
+    sort_key: callable
+        Function used to sort the images ("key" option to "sorted" function). By default, it's assumed that filenames 
+        are "<integer>.png" and they are sorted them in ascending order 
+    accepted_extensions: list
+        List of filename extensions of the images to consider. Files with other extensions are ignored. Defaults to 
+        ["png"] 
+    display_texts: list
+        List of names to overlay on each image. The size must be the same as the number of images retrieved. If None, no
+        name is overlaid
+    display_text_font_size: int or callable
+        An integer or a formula taking a PIL Image class as argument to compute the font size of the text to display. Ignored if 
+        display_texts is None
     """
 
     images = []
-    accepted_extensions = ["png"]
-    filenames = [fn for fn in os.listdir(SAVE_FOLDER_IMAGES) if fn.split(".")[-1] in accepted_extensions]
-    temp = [int(fn.split('.')[0]) for fn in filenames]
-    temp = sorted(temp)
-    final_filenames = [f'{elt}.png' for elt in temp]
+    if accepted_extensions is None:
+        accepted_extensions = ["png"]
+
+    # get filenames sorted in integer order (strings are not sorted as integers)
+    filenames = [fn for fn in os.listdir(folder) if fn.split(".")[-1] in accepted_extensions]
+    final_filenames = sorted(filenames, key=sort_key)
+
+    # fill displays_texts with empty strings if not specified
+    if display_texts is None:
+        display_texts = [None] * len(final_filenames)
+
+    # check that sizes of final_filenames & display_texts match
+    if len(final_filenames) != len(display_texts):
+        raise ValueError(f"display_texts' length must be the number of images ({len(display_texts)} vs {len(final_filenames)})")
+
+    # download Mundi logo
+    logo_img = None
+    if logo_url is not None:
+        logo_img = Image.open(urllib.request.urlopen(logo_url))
+        logo_img.mode = 'RGBA'
+
     k = len(final_filenames)
-    cpt = 1
-    for file in final_filenames:
-        print("\r Image #" + str(cpt) + "/" + str(k))
-        image = Image.open(f"{SAVE_FOLDER_IMAGES}{file}")
-        image = image.convert('RGB')
+    if display_texts is not None and len(display_texts) != k:
+        raise ValueError(f"size of 'display_names' is not equal to the number of files found ({len(display_texts)} vs {k}")
+
+    # open all images
+    for cpt, (file, display_text) in enumerate(zip(final_filenames, display_texts)):
+        print(f"\r Image #{cpt}/{k}")
+        image = Image.open(os.path.join(folder, file)).convert("RGB")
+
+        # add Mundi logo
+        if logo_url is not None:
+            add_logo(image, logo_img, border=False)
+
+        # add filename
+        if display_text is not None:
+            if isinstance(display_text_font_size, int) or isinstance(display_text, float):
+                font_size = display_text_font_size
+            else:
+                font_size = display_text_font_size(image)
+            font = ImageFont.truetype(TTF_PATH, font_size)
+
+            draw = ImageDraw.Draw(image)
+            draw.text((image.width * .08, image.height * .88), display_text, (0, 0, 0), font)
+
         images.append(np.array(image))
-        cpt += 1
         clear_output(wait=True)
 
     # Repeating the last image x times to have a stop at the end of the GIF
@@ -331,7 +390,7 @@ def generate_gif_from_folder(duration, output_name, end_gif_duration):
     for i in range(end_gif_duration):
         images.append(np.array(last_image))
 
-    imageio.mimsave(f'{SAVE_FOLDER_GIF}{output_name}', images, duration=duration / int(k))
+    imageio.mimsave(os.path.join(SAVE_FOLDER_GIF, output_name), images, duration=duration / int(k))
     clear_output(wait=True)
     print("GIF File Generated")
 
@@ -424,13 +483,13 @@ def get_bbox(tab, out, lonmax, latmax, lonmin, latmin, cities_menu, raw_bbox_men
     bbox: tuple
         The bounding box chosen by user
     """
-    if (tab.selected_index == 0):
+    if tab.selected_index == 0:
         bbox = [lonmax.value, latmax.value, lonmin.value, latmin.value]
-    elif (tab.selected_index == 1):
+    elif tab.selected_index == 1:
         polygon, bbox, place_name = city_polygon_bbox(cities_menu.value)
         with out:
             print(place_name)
-    elif (tab.selected_index == 2):
+    elif tab.selected_index == 2:
         bbox = tuple(map(float, raw_bbox_menu.value.split(',')))
     lonmax.value = bbox[0]
     latmax.value = bbox[1]
@@ -577,7 +636,6 @@ def display_gif():
 
 
 def gif_folder():
-    images = []
     accepted_extensions = ["png"]
     filenames = [fn for fn in os.listdir(SAVE_FOLDER_IMAGES) if fn.split(".")[-1] in accepted_extensions]
     temp = [int(fn.split('.')[0]) for fn in filenames]
@@ -611,7 +669,7 @@ def gif_folder():
         disabled=False
     )
     output_name_widget = widgets.Text(
-        value='output_folder.gif',
+        value='output.gif',
         placeholder='Output Name',
         description='Output Name',
         disabled=False
