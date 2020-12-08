@@ -129,7 +129,7 @@ def city_polygon_bbox(city_name):
 
 def display_wms(polygon, bbox, wms, wms_layers, time, height=512):
     """
-    Display polygons and their satellite images using WMS and an interactive map. Use only in Jupyter Notebooks.
+    Display polygons and their satellite img using WMS and an interactive map. Use only in Jupyter Notebooks.
 
     :param polygon: a shapely [Multi]Polygon for the area of interest (AOI)
     :param bbox: the bbox of the AOI

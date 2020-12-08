@@ -6,7 +6,7 @@
 # You may obtain a copy of the License at:
 # https://opensource.org/licenses/BSD-3-Clause
 #
-# Author : Loona Nouvellon
+# Author : Loona Nouvellon / Guillaume Lenoir d'Espinasse
 #
 # Contact email: loona.nouvellon@atos.net
 # =============================================================================
@@ -23,17 +23,23 @@ os.environ["PROJ_LIB"] = r"/opt/conda/share/proj"
 from mpl_toolkits.basemap import Basemap
 from PIL import Image
 
+import string
 import requests
 import ipywidgets as widgets
-from IPython.display import display,clear_output
+from IPython.display import display, clear_output
 
 from owslib.wcs import WebCoverageService
 from owslib.wms import WebMapService
 
 from ecmwfapi import ECMWFDataServer
+import ecmwfapi
 
 from IPython.display import Image
-import pygrib 
+import glob
+
+from IPython.display import clear_output, HTML, Image
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+import pygrib
 import imageio
 from tqdm import tqdm
 
@@ -48,9 +54,503 @@ species = ["O3", "CO", "NH3", "NO", "NO2", "NMVOC", "PANs", "PM10", "PM2.5", "SO
 models = ["ENSEMBLE", "CHIMERE", "EMEP", "EURAD", "LOTOSEUROS", "MATCH", "MOCAGE", "SILAM"]
 levels = [0,  50, 250, 500, 1000, 2000, 3000, 5000]
 
+dict_projection_map = ["WORLD","AFRICA", "ASIA", "EUROPE","NORTH-AMERICA","NORTH-POLE", "OCEANIA", "SOUTH-AMERICA","SOUTH-POLE"]
+
+dict_color_map = ['ocean', 'gist_earth', 'terrain', 'gist_stern','gnuplot', 'gnuplot2',
+                  'CMRmap', 'brg','hsv', 'jet', 'nipy_spectral', 'gist_ncar',  'tab20b', 'tab20c']
+
+color_display_direction = ["Left to right", "Right to left"]
+
+data_parameters = ["Nitrogen dioxyde", "Ozone", "Sulfur dioxyde", "Particulate Matter <2.5 um", "Particulate Matter <10 um" ]
+
+SAVE_FOLDER_IMAGES = "/home/jovyan/work/cams_data/cams_ecmwfapi/images_data/"
+SAVE_FOLDER_GIF = "/home/jovyan/work/cams_data/cams_ecmwfapi/"
+
+
+# ----------------------------------------------------------------
+#  CAMS ECMWFAPI notebook functions:
+# ----------------------------------------------------------------
+
+def setup_dir():
+    """This function gets the destination folder path"""
+    output_dir = path.join(os.environ['HOME'], 'work/cams_data/cams_ecmwfapi/images_data/')
+
+    return output_dir
+
+
+def setup(output_dir):
+    """This function creates the folder output_dir if it doesn't exist"""
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    output_filename = path.join(output_dir, 'output.grib')
+
+    return output_filename
+
+
+def configure_ecmwfapi():
+    """This function allows to log onto the ecmwfapi service"""
+
+    ecmwfapi_email_widget = widgets.Text(
+        value='',
+        placeholder='Enter your email to log in ECMWF',
+        description='Your Email',
+        disabled=False
+    )
+
+    ecmwfapi_key_widget = widgets.Text(
+        value='',
+        placeholder='Enter your ECMWF Key',
+        description='Your Key',
+        disabled=False
+    )
+
+    button_widget = widgets.Button(
+        description='Validate',
+        disabled=False,
+        button_style='',
+        tooltip='Click me',
+    )
+
+    output_widget = widgets.Output(
+    )
+
+    display(ecmwfapi_email_widget)
+    display(ecmwfapi_key_widget)
+    display(button_widget)
+    display(output_widget)
+
+    def click_configure_ecmwfapi(b):
+        with output_widget:
+            ecmwf_email = ecmwfapi_email_widget.value
+            ecmwf_key = ecmwfapi_key_widget.value
+            print('Your ECMWF login email is : ' + ecmwf_email + ', and your ECMWF Key is : ' + ecmwf_key)
+            content = f'{{\n    "url"   : "https://api.ecmwf.int/v1",\n    "key"   : "{ecmwf_key}",\n    "email" : "{ecmwf_email}"\n}}'
+            # write content to $HOME/.ecmwfapirc
+            with open(path.join(os.environ["HOME"], '.ecmwfapirc'), 'w') as f:
+                f.write(content)
+
+    button_widget.on_click(click_configure_ecmwfapi)
+
+
+def request_ecmwfapi(output_filename):
+    """This function creates a request to the ECMWFAPI service with parameters asked in the GUI
+    and generates the output.grib file containing resulting data.
+
+    Parameters
+    ----------
+    output_filename: string
+        folder where the output.grib file will be stored
+    """
+
+    data_parameter_widget = widgets.Dropdown(
+        options=data_parameters,
+        description='Data selection',
+    )
+
+    start_date_widget = widgets.DatePicker(
+        description='Starting Date',
+        value=datetime.date.today() - datetime.timedelta(45),
+        disabled=False
+    )
+
+    current_date_widget = widgets.DatePicker(
+        description='Final date',
+        value=datetime.date.today() - datetime.timedelta(15),
+        disabled=False)
+
+    hour_06 = widgets.Checkbox(
+        value=False,
+        description='06:00:00',
+        disabled=False,
+        indent=True
+    )
+
+    hour_12 = widgets.Checkbox(
+        value=False,
+        description='12:00:00',
+        disabled=False,
+        indent=True
+    )
+
+    hour_18 = widgets.Checkbox(
+        value=False,
+        description='18:00:00',
+        disabled=False,
+        indent=True
+    )
+
+    label_hour = widgets.VBox([widgets.Label(value="Select one or many hours below :"), hour_06, hour_12, hour_18])
+    button = widgets.Button(description='Validate')
+    out = widgets.Output()
+
+    display(data_parameter_widget)
+    display(start_date_widget)
+    display(current_date_widget)
+    display(label_hour)
+    display(button)
+    display(out)
+
+    def click_ecmwfapi_request(b):
+        with out:
+            time_6 = ""
+            time_12 = ""
+            time_18 = ""
+            if hour_06.value == True:
+                time_6 = "/06:00:00"
+            if hour_12.value == True:
+                time_12 = "/12:00:00"
+            if hour_18.value == True:
+                time_18 = "/18:00:00"
+
+            time_param = time_6 + time_12 + time_18
+
+            server = ecmwfapi.ECMWFDataServer()
+            server.retrieve({
+                "class": "mc",
+                "dataset": "cams_nrealtime",
+                "date": str(start_date_widget.value) + "/to/" + str(current_date_widget.value),
+                "expver": "0001",
+                "levtype": "sfc",
+                "param": parameter_value(data_parameter_widget.value),
+                "step": "0",
+                "stream": "oper",
+                "time": "00:00:00" + time_param,
+                "type": "an",
+                "target": output_filename,
+            })
+
+    button.on_click(click_ecmwfapi_request)
+
+
+def parameter_value(atmosphere_data_parameter):
+    """This function returns the parameter value corresponding to the athmosphere gaz value selected in the GUI.
+
+    Parameters
+    ----------
+    atmosphere_data_parameter: string
+        Atmosphere data parameter selected.
+
+    Returns
+    -------
+    data_param: string
+        The data parameter value used in the ECMWFAPI request
+    """
+
+    if atmosphere_data_parameter == "Nitrogen dioxyde":
+        data_param = "125.210"
+    elif atmosphere_data_parameter == "Ozone":
+        data_param = "206.210"
+    elif atmosphere_data_parameter == "Sulfur dioxyde":
+        data_param = "126.210"
+    elif atmosphere_data_parameter == "Particulate Matter <2.5 um":
+        data_param = "73.210"
+    elif atmosphere_data_parameter == "Particulate Matter <10 um":
+        data_param = "74.210"
+
+    return data_param
+
+
+def get_projection_map(output_dir, output_filename):
+    """ This function allows to define what kind of projection map the user wants to display data
+
+     Parameters
+    ----------
+    output_dir: string
+        folder where output.grib and img are stored.
+    output_filename : string
+        output.grib location
+    """
+
+    projection_widget = widgets.Dropdown(
+        options=dict_projection_map,
+        description='Map Location',
+    )
+
+    button = widgets.Button(description='Validate')
+    out = widgets.Output()
+
+    display(projection_widget)
+    display(button)
+    display(out)
+
+    def click_projection_map(b):
+        with out:
+            clear_output(wait=True)
+            get_color_map(output_dir, output_filename, projection_widget.value)
+
+    button.on_click(click_projection_map)
+
+
+def get_color_map(output_dir, output_filename, projection):
+    """ This function allows to display the Matplotlib colormap possibilities and gives the right to the user to define
+    what kind of colormap and direction way he wants to display data.
+
+    Parameters
+    ----------
+    output_dir: string
+        folder where output.grib and img are stored.
+    output_filename : string
+        output.grib location
+    projection : string
+        the continent where data will be displayed
+    """
+
+    # displaying colormaps sample:
+    gradient = np.linspace(0, 1, 256)
+    gradient = np.vstack((gradient, gradient))
+
+    fig, axes = plt.subplots(nrows=len(dict_color_map))
+    fig.subplots_adjust(top=0.95, bottom=0.01, left=0.2, right=0.99)
+    axes[0].set_title('Colormaps sample', fontsize=14)
+
+    for ax, name in zip(axes, dict_color_map):
+        ax.imshow(gradient, aspect='auto', cmap=plt.get_cmap(name))
+        pos = list(ax.get_position().bounds)
+        x_text = pos[0] - 0.01
+        y_text = pos[1] + pos[3] / 2.
+        fig.text(x_text, y_text, name, va='center', ha='right', fontsize=10)
+
+    # Turn off *all* ticks & spines, not just the ones with colormaps.
+    for ax in axes:
+        ax.set_axis_off()
+
+    plt.show()
+
+    # defining colormap user choice:
+    color_map_widget = widgets.Dropdown(
+        options=dict_color_map,
+        description='Map colors',
+        value="gist_ncar"
+    )
+
+    color_display_direction_widget = widgets.Dropdown(
+        options=color_display_direction,
+        description='Display direction',
+    )
+
+    image_title_widget = widgets.Text(
+        value='',
+        placeholder='Enter your title',
+        description='Title',
+        disabled=False
+    )
+
+    gif_filename_widget = widgets.Text(
+        value='',
+        placeholder='Enter the GIF file name',
+        description='GIF file name',
+        disabled=False
+    )
+
+    button = widgets.Button(description='Validate')
+    out = widgets.Output()
+
+    display(color_map_widget)
+    display(color_display_direction_widget)
+    display(image_title_widget)
+    display(gif_filename_widget)
+    display(button)
+    display(out)
+
+    def click_color_map(b):
+        with out:
+            color_map = color_map_widget.value
+            if color_display_direction_widget.value == color_display_direction[1]:
+                color_map = color_map + "_r"
+            if (image_title_widget.value == '') and (gif_filename_widget.value == ''):
+                gif_filename_widget.value = "your_gif_file"
+            elif (gif_filename_widget.value == ''):
+                gif_filename_widget.value = image_title_widget.value
+            print("Images download is starting !")
+            clear_output(wait=True)
+            download_images(output_filename, output_dir, projection, color_map, image_title_widget.value,
+                            gif_filename_widget.value)
+
+    button.on_click(click_color_map)
+
+
+def download_images(output_filename, output_dir, projection, color_map, image_title, gif_filename):
+    """ This function allows to download the data in the output.grib file and build each image
+
+    Parameters
+    ----------
+    output_dir: string
+        folder where output.grib and img are stored.
+    output_filename : string
+        output.grib location
+    projection : string
+        the continent where data will be displayed
+    color_map : string
+        the color range selected to display data
+    image_title : string
+        the title displayed on each image
+    gif_filename : string
+        the name of the gif file
+    """
+
+    # open a GRIB file
+    with pygrib.open(output_filename) as grbs:
+        grb = grbs.select()[0]
+        vmax = np.amax(grb.values)
+
+        unit = grb['units']
+
+        # get the longitudes and the latitudes
+        latitudes, longitudes = grb.latlons()
+
+        # Emptying the folder which contains precedent img
+        if not os.path.exists("/home/jovyan/work/cams_data/cams_ecmwfapi/images_data/"):
+            os.makedirs("/home/jovyan/work/cams_data/cams_ecmwfapi/images_data/")
+        files = glob.glob(f'{"/home/jovyan/work/cams_data/cams_ecmwfapi/images_data/"}[!output.grib]*')
+        for f in files:
+            os.remove(f)
+
+        cpt = 1
+
+        # create and save a figure for each grib message
+        for grb in grbs.select():
+            figure(num=None, figsize=(16, 10))
+
+            # create a map
+            map_ = get_basemap(projection, grb)
+            map_.drawcoastlines()
+            map_.drawcountries()
+
+            x, y = map_(longitudes, latitudes)
+            data = grb.values
+
+            # display the data
+            cs = map_.pcolormesh(x, y, data, cmap=plt.get_cmap(color_map), vmin=0, vmax=vmax)
+            map_.colorbar(cs, label=unit)
+
+            plt.title(str(image_title) + f' / {grb["parameterName"]} / date: {grb["dataDate"]} / hour: {grb["hour"]}',
+                      loc='left')
+            plt.savefig(path.join(output_dir, f'{grb.messagenumber}'))
+            plt.close()
+            print("\r #Image - " + str(cpt) + "/" + str(np.size(grbs.select())) + " downloaded")
+            cpt += 1
+            clear_output(wait=True)
+
+    print("Your img have been successfully downloaded !")
+    display_GIF_images(output_dir, gif_filename)
+
+
+def get_basemap(projection, grb):
+    """ This function returns the Basemap corresponding to the projection map selected in the GUI.
+
+    Parameters
+    ----------
+    projection : string
+        the continent where data will be displayed
+
+    Returns
+    -------
+    map_:
+        the Basemap builds to display data
+    """
+
+    # get the longitudes and the latitudes
+    latitudes, longitudes = grb.latlons()
+
+    if projection == "WORLD":
+        map_ = Basemap(projection='cyl', lat_ts=10, llcrnrlon=longitudes.min(),
+                       urcrnrlon=longitudes.max(), llcrnrlat=latitudes.min(), urcrnrlat=latitudes.max(), resolution='l')
+    elif projection == "AFRICA":
+        map_ = Basemap(width=12000000, height=9000000, resolution='l', projection='eqdc', lat_1=-45., lat_2=36, lat_0=0,
+                       lon_0=22.)
+    elif projection == "SOUTH-AMERICA":
+        map_ = Basemap(width=12000000, height=9000000, resolution='l', projection='eqdc', lat_1=-55., lat_2=12,
+                       lat_0=-26, lon_0=-60.)
+    elif projection == "ASIA":
+        map_ = Basemap(width=12000000, height=9000000, resolution='l', projection='eqdc', lat_1=10., lat_2=70, lat_0=45,
+                       lon_0=100.)
+    elif projection == "EUROPE":
+        map_ = Basemap(width=8000000, height=7000000, resolution='l', projection='eqdc', lat_1=40., lat_2=60, lon_0=35,
+                       lat_0=50)
+    elif projection == "NORTH-AMERICA":
+        map_ = Basemap(width=12000000, height=9000000, resolution='l', projection='eqdc', lat_1=45., lat_2=55, lat_0=50,
+                       lon_0=-107.)
+    elif projection == "NORTH-POLE":
+        map_ = Basemap(projection='nplaea', boundinglat=10, lon_0=270, resolution='l')
+    elif projection == "OCEANIA":
+        map_ = Basemap(width=12000000, height=9000000, resolution='l', projection='eqdc', lat_1=-45., lat_2=5,
+                       lat_0=-25, lon_0=136.)
+    elif projection == "SOUTH-POLE":
+        map_ = Basemap(projection='splaea', boundinglat=-10, lon_0=90, resolution='l')
+
+    return map_
+
+
+def display_GIF_images(output_dir, gif_filename):
+    """ This function allows to build and display the GIF file.
+
+    Parameters
+    ----------
+    output_dir: string
+        folder where output.grib and img are stored.
+    output_filename : string
+        output.grib location
+    """
+
+    images = []
+    accepted_extensions = ["png"]
+    filenames = [fn for fn in os.listdir(SAVE_FOLDER_IMAGES) if fn.split(".")[-1] in accepted_extensions]
+    temp = [int(fn.split('.')[0]) for fn in filenames]
+    temp = sorted(temp)
+    final_filenames = [f'{elt}.png' for elt in temp]
+    k = len(final_filenames)
+    cpt = 1
+    for file in final_filenames:
+        print("\r Image #" + str(cpt) + "/" + str(k))
+        image = Image.open(f"{SAVE_FOLDER_IMAGES}{file}")
+        image = image.convert('RGB')
+        images.append(np.array(image))
+        cpt += 1
+        clear_output(wait=True)
+
+    # Repeating the last image x times to have a stop at the end of the GIF
+    last_image = images[-1]
+    for i in range(4):
+        images.append(np.array(last_image))
+
+    imageio.mimsave(f'{SAVE_FOLDER_GIF}{gif_filename}.gif', images, duration=0.3)
+    clear_output(wait=True)
+    print("GIF File Generated")
+    display(HTML('<img src="{}">'.format('../../work/cams_data/cams_ecmwfapi/' + gif_filename + '.gif')))
+
+
+def display_gif_folder():
+    """ This function allows to display GIF files presents in the cams_ecmwfapi folder
+    """
+
+    accepted_extensions = ["gif"]
+    filenames = [fn for fn in os.listdir(SAVE_FOLDER_GIF) if fn.split(".")[-1] in accepted_extensions]
+    display_file_widget = widgets.Dropdown(
+        options=filenames,
+        description='GIF Display',
+    )
+    button_dis = widgets.Button(description='Display this GIF')
+    out_wid_dis = widgets.Output()
+
+    def click_display(b):
+        with out_wid_dis:
+            clear_output(wait=True)
+            print('Your "' + display_file_widget.value + '" is being displayed !')
+            print("")
+            display(HTML('<img src="{}">'.format('../../work/cams_data/cams_ecmwfapi/' + display_file_widget.value)))
+
+    button_dis.on_click(click_display)
+
+    display(display_file_widget)
+    display(button_dis)
+    display(out_wid_dis)
+
 # ----------------------------------------------------------------
 #  CAMS methods
 # ----------------------------------------------------------------
+
 def getServiceUrl(method, model, service, token):
     if model in models and method in methods:
         return server_url + "CAMS50-" + model + "-" + method +"-01-EUROPE-" + service  + "?token=" + token
